@@ -1,0 +1,57 @@
+---
+import { CONFIG, NOTA_MIN, NOTA_MAX } from "../config";
+---
+<div class="sheet" id="scoreSheet" hidden role="dialog" aria-modal="true" aria-labelledby="sheetTeam">
+  <div class="sheet__backdrop" data-close></div>
+  <div class="sheet__panel">
+    <header class="sheet__head">
+      <div class="sheet__titles">
+        <span class="sheet__who" id="sheetWho">Calificando</span>
+        <div class="sheet__titlerow">
+          <h2 class="sheet__team" id="sheetTeam">Equipo</h2>
+          <span class="sheet__scale">· Califica del {NOTA_MIN} al {NOTA_MAX}</span>
+        </div>
+      </div>
+      <button type="button" class="sheet__close" data-close aria-label="Cerrar">✕</button>
+    </header>
+
+    <div class="sheet__body" id="sheetBody">
+      {CONFIG.criterios.map((c, i) => (
+        <section class={`crit c-${c.color}`} data-crit={c.id} data-peso={c.peso}>
+          <div class="crit__top">
+            <h3 class="crit__title"><span class="crit__n">{i + 1}</span>{c.nombre}</h3>
+            <span class="crit__peso">{c.peso}%</span>
+          </div>
+          <details class="crit__desc">
+            <summary>{c.resumen}</summary>
+            <p>{c.descripcion}</p>
+          </details>
+          <div class="crit__input">
+            <input
+              class="nota"
+              type="text"
+              inputmode="numeric"
+              pattern="[0-9]*"
+              maxlength="2"
+              autocomplete="off"
+              enterkeyhint={i === CONFIG.criterios.length - 1 ? "done" : "next"}
+              placeholder="–"
+              aria-label={`Nota ${c.nombre} del ${NOTA_MIN} al ${NOTA_MAX}`}
+            />
+          </div>
+        </section>
+      ))}
+
+      <section class="comment">
+        <label for="comment">Comentario <span>(opcional)</span></label>
+        <textarea class="input" id="comment" rows="2" placeholder="Fortalezas, oportunidades de mejora…"></textarea>
+      </section>
+    </div>
+
+    <footer class="sheet__foot">
+      <button type="button" class="btn btn--primary sheet__save" id="sheetSave" disabled>
+        <span id="sheetSaveText">Faltan {CONFIG.criterios.length}</span>
+      </button>
+    </footer>
+  </div>
+</div>

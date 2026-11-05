@@ -1,0 +1,9 @@
+---
+interface Props {
+  text: string;
+  color?: string;
+  size?: "md" | "lg";
+}
+const { text, color = "org", size = "md" } = Astro.props;
+---
+<span class:list={["avatar", `avatar--${size}`, `c-${color}`]}>{text}</span>

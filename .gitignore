@@ -1,0 +1,6 @@
+node_modules/
+dist/
+.astro/
+.firebase/
+*-debug.log
+.e2e-dist/

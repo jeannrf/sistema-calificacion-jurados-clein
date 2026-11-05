@@ -1,0 +1,236 @@
+---
+import Layout from "../../layouts/Layout.astro";
+import ScoreModal from "../../components/ScoreModal.astro";
+import { CONFIG } from "../../config";
+---
+<Layout title="Equipos">
+  <div class="page-head">
+    <span class="eyebrow">{CONFIG.evento}</span>
+    <h1 id="greeting">Equipos</h1>
+    <p>Toca un equipo para calificarlo. Puedes editar tus notas cuando quieras.</p>
+  </div>
+
+  <div class="card progress-card">
+    <div class="ring">
+      <svg viewBox="0 0 36 36" aria-hidden="true">
+        <circle cx="18" cy="18" r="15.9" class="ring__bg" pathLength="100" />
+        <circle cx="18" cy="18" r="15.9" class="ring__fg" id="ring" pathLength="100" stroke-dasharray="0 100" />
+      </svg>
+      <b id="pct">0%</b>
+    </div>
+    <div>
+      <div class="progress-card__label">Tu avance</div>
+      <div class="progress-card__count"><span id="doneCount">0</span> de {CONFIG.equipos.length} equipos calificados</div>
+      <div class="sync" id="syncNote" hidden><span class="sync__dot"></span>Sincronizando tus notas…</div>
+    </div>
+  </div>
+
+  <div class="teams">
+    {CONFIG.equipos.map((t, i) => (
+      <button type="button" class="team" data-team={t} data-i={i}>
+        <span class="team__index">{String(i + 1).padStart(2, "0")}</span>
+        <span class="team__main">
+          <span class="team__name">{t}</span>
+          <span class="pill pill--pending" data-status>Pendiente</span>
+        </span>
+      </button>
+    ))}
+  </div>
+
+  <ScoreModal />
+</Layout>
+
+<script>
+  import { CONFIG } from "../../config";
+  import { parseNota, ponderar } from "../../lib/scoring";
+  import {
+    requireJudge, judgeScores, setScore, getDraft, setDraft, clearDraft, sendRemote, syncPending, pullJudge, remoteEnabled, toast, fmt,
+    type ScoreRecord,
+  } from "../../lib/store";
+
+  const $ = <T extends HTMLElement = HTMLElement>(s: string, el: ParentNode = document) => el.querySelector<T>(s)!;
+  const judge = requireJudge();
+
+  if (judge) {
+    $("#greeting").textContent = `Hola, ${judge.corto.split(" ")[0]}`;
+    $("#sheetWho").textContent = `Calificando como: ${judge.corto}`;
+
+    /* ---------- Lista de equipos ---------- */
+    const paintList = () => {
+      const scores = judgeScores(judge.id);
+      let done = 0;
+      document.querySelectorAll<HTMLElement>(".team").forEach((el) => {
+        const r = scores[el.dataset.team!];
+        const pill = $("[data-status]", el);
+        el.classList.toggle("team--done", !!r);
+        if (!r) {
+          const d = getDraft(judge.id, el.dataset.team!);
+          const started = d && Object.values(d.notas).some((v) => v !== null);
+          pill.className = started ? "pill pill--sync" : "pill pill--pending";
+          pill.textContent = started ? "Sin terminar" : "Pendiente";
+          return;
+        }
+        done++;
+        if (remoteEnabled() && !r.synced) { pill.className = "pill pill--sync"; pill.textContent = "Por enviar"; }
+        else { pill.className = "pill pill--done"; pill.textContent = "✓ Calificado"; }
+      });
+      const pct = Math.round((done / CONFIG.equipos.length) * 100);
+      $("#doneCount").textContent = String(done);
+      $("#pct").textContent = pct + "%";
+      $("#ring").setAttribute("stroke-dasharray", `${pct} 100`);
+    };
+
+    /* ---------- Modal de calificación ---------- */
+    const sheet = $("#scoreSheet");
+    const body = $("#sheetBody");
+    const comment = $<HTMLTextAreaElement>("#comment");
+    const saveBtn = $<HTMLButtonElement>("#sheetSave");
+    const cards = [...sheet.querySelectorAll<HTMLElement>(".crit")];
+    const inputs = cards.map((c) => $<HTMLInputElement>(".nota", c));
+    const notas: Record<string, number | null> = {};
+    let team: string | null = null;
+    let dirty = false; // ¿el jurado ya escribió algo desde que abrió el modal?
+    let advanceTimer: ReturnType<typeof setTimeout> | undefined;
+
+    const parse = parseNota;
+
+    const refresh = () => {
+      let missing = 0;
+      for (const card of cards) if (notas[card.dataset.crit!] === null) missing++;
+      saveBtn.disabled = missing > 0;
+      $("#sheetSaveText").textContent = missing ? `Faltan ${missing}` : "Guardar";
+    };
+
+    // Guarda lo escrito al instante (borrador), para no perderlo si el navegador recarga.
+    const saveDraft = () => { if (team) { dirty = true; setDraft(judge.id, team, { notas: { ...notas }, comentario: comment.value }); } };
+    comment.addEventListener("input", saveDraft);
+
+    const focusNext = (i: number) => {
+      const next = inputs[i + 1];
+      if (next) { next.focus(); next.select(); }
+      else inputs[i].blur(); // último: cierra el teclado y deja ver "Guardar"
+    };
+
+    inputs.forEach((input, i) => {
+      const card = cards[i];
+      const id = card.dataset.crit!;
+      input.addEventListener("focus", () => {
+        input.select();
+        card.scrollIntoView({ behavior: "smooth", block: "center" });
+      });
+      input.addEventListener("input", () => {
+        input.value = input.value.replace(/\D/g, "").slice(0, 2);
+        const raw = input.value;
+        const v = parse(raw);
+        notas[id] = v;
+        card.classList.toggle("crit--done", v !== null);
+        card.classList.toggle("crit--error", raw !== "" && v === null && raw !== "1");
+        refresh();
+        saveDraft();
+        clearTimeout(advanceTimer);
+        // Avance automático: 2–9 y 10 pasan al siguiente; "1" espera por si es 10.
+        if (v !== null && (v >= 2 || raw === "10")) advanceTimer = setTimeout(() => focusNext(i), 120);
+        else if (raw === "1") advanceTimer = setTimeout(() => focusNext(i), 900);
+      });
+      input.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") { e.preventDefault(); clearTimeout(advanceTimer); focusNext(i); }
+      });
+    });
+
+    function open(t: string) {
+      team = t;
+      dirty = false;
+      const prev = judgeScores(judge!.id)[t];
+      const draft = getDraft(judge!.id, t); // lo escrito sin guardar tiene prioridad
+      $("#sheetTeam").textContent = t;
+      cards.forEach((card, i) => {
+        const id = card.dataset.crit!;
+        const v = draft ? draft.notas[id] ?? null : prev ? prev.scores[id] ?? null : null;
+        notas[id] = v;
+        inputs[i].value = v === null ? "" : String(v);
+        card.classList.toggle("crit--done", v !== null);
+        card.classList.remove("crit--error");
+      });
+      comment.value = draft ? draft.comentario : prev?.comentario ?? "";
+      refresh();
+      sheet.hidden = false;
+      document.body.classList.add("no-scroll");
+      body.scrollTop = 0;
+      // En escritorio enfocamos la primera nota vacía; en móvil no, para no tapar con el teclado.
+      if (matchMedia("(hover: hover)").matches) {
+        const first = inputs.find((inp) => !inp.value) ?? inputs[0];
+        setTimeout(() => first.focus(), 60);
+      }
+    }
+    function close() {
+      clearTimeout(advanceTimer);
+      sheet.hidden = true;
+      team = null;
+      document.body.classList.remove("no-scroll");
+      paintList(); // refleja "Sin terminar" si quedó un borrador
+    }
+
+    // El modal vive en el hash (#equipo-3): el botón "atrás" del celular lo cierra.
+    const fromHash = () => {
+      const m = location.hash.match(/^#equipo-(\d+)$/);
+      const t = m ? CONFIG.equipos[Number(m[1])] : undefined;
+      if (t) open(t); else { pushed = false; if (!sheet.hidden) close(); }
+    };
+    let pushed = false; // ¿abrimos el modal agregando una entrada al historial?
+    const requestClose = () => {
+      if (pushed) { pushed = false; history.back(); }
+      else { history.replaceState(null, "", location.pathname); close(); }
+    };
+
+    document.querySelectorAll<HTMLElement>(".team").forEach((el) =>
+      el.addEventListener("click", () => { pushed = true; location.hash = `equipo-${el.dataset.i}`; }));
+    sheet.addEventListener("click", (e) => { if ((e.target as HTMLElement).closest("[data-close]")) requestClose(); });
+    document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !sheet.hidden) requestClose(); });
+    window.addEventListener("hashchange", fromHash);
+
+    saveBtn.addEventListener("click", async () => {
+      if (!team) return;
+      const t = team;
+      const scores = notas as Record<string, number>;
+      const record: ScoreRecord = {
+        scores: { ...scores },
+        total: ponderar(scores),
+        comentario: comment.value.trim(),
+        ts: new Date().toISOString(),
+        synced: false,
+      };
+      setScore(judge.id, t, record);
+      clearDraft(judge.id, t);
+      requestClose();
+      paintList();
+      if (remoteEnabled()) {
+        if (await sendRemote(judge, t, record)) {
+          setScore(judge.id, t, { ...record, synced: true });
+          toast(`✓ ${t}: ${fmt(record.total)} pts enviados`, "ok");
+        } else {
+          toast("Guardado en este celular. Se reenviará al recuperar conexión.", "warn");
+        }
+        paintList();
+      } else {
+        toast(`✓ ${t}: ${fmt(record.total)} pts guardados`, "ok");
+      }
+    });
+
+    paintList();
+    fromHash();
+    // Al entrar: sube lo pendiente y trae lo que ya esté en Firebase (por si cambió de celular).
+    const syncNote = $("#syncNote");
+    if (remoteEnabled()) syncNote.hidden = false;
+    syncPending(judge).then(() => pullJudge(judge)).then((n) => {
+      syncNote.hidden = true;
+      paintList();
+      // Si el modal está abierto y aún no escribió nada, mostrar las notas que llegaron.
+      if (n && team && !dirty && !sheet.hidden) open(team);
+    });
+    window.addEventListener("online", () => syncPending(judge).then((n) => n && paintList()));
+    // Al volver a la página (p. ej. desde WhatsApp) reintenta lo que quedó "Por enviar".
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible") syncPending(judge).then((n) => n && paintList());
+    });
+  }
+</script>

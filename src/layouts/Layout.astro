@@ -1,0 +1,76 @@
+---
+import "../styles/global.css";
+
+interface Props {
+  title?: string;
+  bare?: boolean; // sin barra superior (pantalla de acceso)
+}
+const { title, bare = false } = Astro.props;
+const fullTitle = title ? `${title} · Despega CLEIN` : "Despega CLEIN · Calificación de Jurados";
+---
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#2e3a6f" />
+    <meta name="robots" content="noindex" />
+    <title>{fullTitle}</title>
+    <link rel="icon" type="image/png" href="/logo-clein.png" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=League+Spartan:wght@500;600;700;800&display=swap"
+      rel="stylesheet"
+    />
+  </head>
+  <body class:list={{ "is-bare": bare }}>
+    {!bare && (
+      <header class="topbar">
+        <div class="topbar__inner">
+          <a class="brand" href="/">
+            <img src="/logo-clein-white.png" alt="CLEIN Perú 2026" class="brand__logo" />
+            <span class="brand__text">
+              <span class="brand__title">Despega CLEIN</span>
+              <span class="brand__sub">Sistema de calificación de jurados</span>
+            </span>
+          </a>
+          <div class="session" id="session" hidden>
+            <span class="session__avatar" id="sessionAvatar"></span>
+            <span class="session__name" id="sessionName"></span>
+            <button class="btn btn--ghost-light btn--sm" id="logoutBtn">Salir</button>
+          </div>
+        </div>
+      </header>
+    )}
+
+    <main class="container">
+      <slot />
+    </main>
+
+    <footer class="footer">
+      CLEIN Perú 2026 · Congreso Latinoamericano de Estudiantes de Ingeniería Industrial y Afines
+    </footer>
+
+    <div class="toast" id="toast" hidden></div>
+
+    <script>
+      import { CONFIG } from "../config";
+      import { getSession, setSession, findJudge, showFlash } from "../lib/store";
+
+      const id = getSession();
+      const box = document.getElementById("session");
+      if (box && id) {
+        const j = findJudge(id);
+        document.getElementById("sessionAvatar")!.textContent = j ? j.iniciales : "AD";
+        document.getElementById("sessionName")!.textContent = j ? j.corto : CONFIG.admin.nombre;
+        box.hidden = false;
+      }
+      document.getElementById("logoutBtn")?.addEventListener("click", () => {
+        setSession(null);
+        location.href = "/";
+      });
+      showFlash();
+    </script>
+  </body>
+</html>

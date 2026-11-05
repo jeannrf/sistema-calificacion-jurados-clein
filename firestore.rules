@@ -1,0 +1,29 @@
+rules_version = '2';
+
+// Reglas simples para Despega CLEIN: cualquiera con la página puede leer,
+// y solo se aceptan calificaciones con el formato correcto. No se puede borrar.
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /calificaciones/{id} {
+      allow read: if true;
+      allow create, update: if valida(id, request.resource.data);
+      allow delete: if false;
+    }
+
+    function nota(v) {
+      return v is int && v >= 1 && v <= 10;
+    }
+
+    function valida(id, d) {
+      return d.keys().hasOnly(['juradoId', 'jurado', 'equipo', 'total', 'comentario', 'fecha',
+                               'impacto', 'tecnica', 'alineacion', 'negocio', 'pitch'])
+        && d.juradoId in ['edwin', 'alejandro', 'jaime']
+        && id.matches(d.juradoId + '__.+')
+        && d.jurado is string && d.equipo is string && d.equipo.size() <= 80
+        && d.comentario is string && d.comentario.size() <= 2000
+        && d.fecha is string
+        && (d.total is int || d.total is float) && d.total >= 0 && d.total <= 100
+        && nota(d.impacto) && nota(d.tecnica) && nota(d.alineacion) && nota(d.negocio) && nota(d.pitch);
+    }
+  }
+}

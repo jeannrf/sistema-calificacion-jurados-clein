@@ -1,0 +1,267 @@
+---
+import Layout from "../layouts/Layout.astro";
+import { CONFIG } from "../config";
+---
+<Layout title="Administrador">
+  <div class="page-head">
+    <span class="eyebrow">{CONFIG.evento} · Administrador</span>
+    <h1>Puntajes y rankings</h1>
+    <p>Puntaje final de cada equipo = promedio simple de los puntajes (sobre 100) que le dio cada jurado.</p>
+  </div>
+
+  <div id="stats"></div>
+
+  <div class="toolbar">
+    <button class="btn btn--primary btn--sm" id="refreshBtn">↻ Actualizar</button>
+    <button class="btn btn--gold btn--sm" id="csvRankBtn">⬇ CSV ranking</button>
+    <button class="btn btn--ghost btn--sm" id="csvDetailBtn">⬇ CSV detalle</button>
+    <span class="spacer"></span>
+    <span class="note" id="source"></span>
+  </div>
+
+  <div class="tabs" role="tablist">
+    <button class="tab is-active" role="tab" data-tab="final">Ranking final</button>
+    <button class="tab" role="tab" data-tab="jurado">Por jurado</button>
+    <button class="tab" role="tab" data-tab="criterio">Por criterio</button>
+  </div>
+
+  <section id="tab-final" class="tabpanel"></section>
+  <section id="tab-jurado" class="tabpanel" hidden></section>
+  <section id="tab-criterio" class="tabpanel" hidden></section>
+</Layout>
+
+<script>
+  import { CONFIG, MAX_TOTAL, NOTA_MAX } from "../config";
+  import { requireAdmin, remoteEnabled, subscribeRemote, localRows, toast, fmt, esc, type Row } from "../lib/store";
+  import { aggregate, judgeRanking } from "../lib/scoring";
+
+  const $ = (s: string) => document.querySelector<HTMLElement>(s)!;
+  const NJ = CONFIG.jurados.length;
+  const NT = CONFIG.equipos.length;
+  const dash = `<span class="dash">—</span>`;
+  const medals = ["🥇", "🥈", "🥉"];
+  const critLabel = (nombre: string) => nombre.split(" ")[0];
+  const rankBadge = (r: number) => `<span class="rank ${r <= 3 ? "rank--" + r : ""}">${r}</span>`;
+  const tieTag = (tie: boolean) => (tie ? ` <span class="tie">Empate</span>` : "");
+
+  let rows: Row[] = [];
+  let tab = "final";
+  let judgeSel = CONFIG.jurados[0].id;
+  try { tab = localStorage.getItem("admin-tab") || tab; judgeSel = localStorage.getItem("admin-judge") || judgeSel; } catch {}
+
+  type Agg = ReturnType<typeof aggregate>;
+
+  /* ---------- Render ---------- */
+  function renderStats(agg: Agg) {
+    const complete = agg.teams.filter((t) => t.n === NJ).length;
+    const first = agg.scored[0];
+    const pct = agg.expected ? Math.min(100, (agg.received / agg.expected) * 100) : 0;
+    $("#stats").innerHTML = `
+      ${agg.complete
+        ? `<div class="banner banner--ok">✓ Todas las calificaciones recibidas (${agg.received}/${agg.expected}). El ranking final está listo.</div>`
+        : `<div class="banner">Faltan ${agg.expected - agg.received} calificaciones. El ranking se actualiza solo a medida que llegan.</div>`}
+      <div class="stats">
+        <div class="card stat"><b>${agg.received}<small>/${agg.expected}</small></b><span>Calificaciones recibidas</span>
+          <div class="stat__bar"><div style="width:${pct}%"></div></div></div>
+        <div class="card stat"><b>${complete}<small>/${NT}</small></b><span>Equipos con los ${NJ} jurados</span></div>
+        <div class="card stat"><b>${first ? esc(first.team) : "—"}</b><span>Primer lugar${first?.tie ? " (empate)" : ""}</span></div>
+        <div class="card stat"><b>${first ? fmt(first.avg!) : "—"}<small>/${MAX_TOTAL}</small></b><span>Mejor promedio</span></div>
+      </div>`;
+  }
+
+  function renderFinal(agg: Agg) {
+    const podium = agg.scored.filter((t) => t.rank <= 3);
+    $("#tab-final").innerHTML = `
+      ${podium.length ? `<div class="podium">
+        ${podium.map((t) => `
+          <div class="card podium__item podium__item--${t.rank}">
+            <span class="podium__medal">${medals[t.rank - 1]}</span>
+            <span class="podium__team">${esc(t.team)}</span>
+            <span class="podium__score">${fmt(t.avg!)}<small>/${MAX_TOTAL}</small></span>
+            <span class="note">${t.rank}° lugar${t.tie ? " · empate" : ""} · ${t.n}/${NJ} jurados</span>
+          </div>`).join("")}
+      </div>` : ""}
+
+      <div class="card rlist">
+        <div class="rlist__head">
+          <span>#</span><span>Equipo y puntaje de cada jurado</span><span>Promedio</span>
+        </div>
+        ${agg.scored.map((t) => `
+          <div class="rrow" data-team="${esc(t.team)}">
+            ${rankBadge(t.rank)}
+            <div class="rrow__main">
+              <div class="rrow__team">${esc(t.team)}${tieTag(t.tie)} <span class="note">${t.n}/${NJ} jurados${t.n < NJ ? " · incompleto" : ""}</span></div>
+              <div class="jchips">
+                ${CONFIG.jurados.map((j) => {
+                  const r = t.judges[j.id];
+                  return `<span class="jchip c-${j.color} ${r ? "" : "jchip--empty"}" title="${esc(j.nombre)}">
+                    <b>${esc(j.iniciales)}</b>${r ? fmt(r.total) : "—"}</span>`;
+                }).join("")}
+              </div>
+            </div>
+            <div class="rrow__score">${fmt(t.avg!)}<small>/${MAX_TOTAL}</small></div>
+          </div>`).join("")}
+        ${agg.pending.map((t) => `
+          <div class="rrow rrow--pending" data-team="${esc(t.team)}">
+            <span class="rank">–</span>
+            <div class="rrow__main"><div class="rrow__team">${esc(t.team)} <span class="note">sin calificar</span></div></div>
+            <div class="rrow__score">${dash}</div>
+          </div>`).join("")}
+      </div>`;
+  }
+
+  function renderJudge(agg: Agg) {
+    const judge = CONFIG.jurados.find((j) => j.id === judgeSel) ?? CONFIG.jurados[0];
+    const counts = Object.fromEntries(CONFIG.jurados.map((j) => [j.id, judgeRanking(agg.valid, j.id).length]));
+    const ranked = judgeRanking(agg.valid, judge.id);
+    const done = new Set(ranked.map((r) => r.equipo));
+    const pending = CONFIG.equipos.filter((t) => !done.has(t));
+    const avg = ranked.length ? ranked.reduce((s, r) => s + r.total, 0) / ranked.length : null;
+
+    $("#tab-jurado").innerHTML = `
+      <div class="jpick">
+        ${CONFIG.jurados.map((j) => `
+          <button class="jpick__btn c-${j.color} ${j.id === judge.id ? "is-active" : ""}" data-judge="${j.id}">
+            <span class="avatar">${esc(j.iniciales)}</span>
+            <span class="jpick__txt"><b>${esc(j.corto)}</b><small>${counts[j.id]}/${NT} equipos</small></span>
+          </button>`).join("")}
+      </div>
+
+      <div class="card rlist">
+        <div class="rlist__title">
+          <div><b>Ranking de ${esc(judge.nombre)}</b>
+          <span class="note">${ranked.length}/${NT} equipos calificados${avg !== null ? ` · promedio que otorga: ${fmt(avg)}` : ""}</span></div>
+        </div>
+        ${ranked.map((r) => `
+          <div class="rrow">
+            ${rankBadge(r.rank)}
+            <div class="rrow__main">
+              <div class="rrow__team">${esc(r.equipo)}${tieTag(r.tie)}</div>
+              <div class="cchips">
+                ${CONFIG.criterios.map((c) => `<span class="cchip c-${c.color}" title="${esc(c.nombre)} (${c.peso}%)">${esc(critLabel(c.nombre))} <b>${r[c.id]}</b></span>`).join("")}
+              </div>
+              ${r.comentario ? `<p class="rrow__comment">“${esc(r.comentario)}”</p>` : ""}
+            </div>
+            <div class="rrow__score">${fmt(r.total)}<small>/${MAX_TOTAL}</small></div>
+          </div>`).join("")}
+        ${pending.map((t) => `
+          <div class="rrow rrow--pending">
+            <span class="rank">–</span>
+            <div class="rrow__main"><div class="rrow__team">${esc(t)} <span class="note">pendiente</span></div></div>
+            <div class="rrow__score">${dash}</div>
+          </div>`).join("")}
+      </div>`;
+
+    document.querySelectorAll<HTMLElement>(".jpick__btn").forEach((b) => b.addEventListener("click", () => {
+      judgeSel = b.dataset.judge!;
+      try { localStorage.setItem("admin-judge", judgeSel); } catch {}
+      renderJudge(agg);
+    }));
+  }
+
+  function renderCriterio(agg: Agg) {
+    const list = [...agg.scored, ...agg.pending.map((t) => ({ ...t, rank: 0, tie: false }))];
+    $("#tab-criterio").innerHTML = `
+      <p class="note" style="margin:0 0 10px">Nota promedio (1 a ${NOTA_MAX}) que recibió cada equipo en cada criterio.</p>
+      <div class="card table-wrap">
+        <table>
+          <thead><tr>
+            <th>#</th><th class="left">Equipo</th>
+            ${CONFIG.criterios.map((c) => `<th title="${esc(c.nombre)}">${esc(critLabel(c.nombre))} <span class="th-max">${c.peso}%</span></th>`).join("")}
+            <th>Final</th>
+          </tr></thead>
+          <tbody>
+            ${list.map((t) => `
+              <tr>
+                <td>${t.rank ? rankBadge(t.rank) : dash}</td>
+                <td class="left"><b class="team-cell">${esc(t.team)}</b></td>
+                ${CONFIG.criterios.map((c) => `<td>${t.crit[c.id] !== null ? fmt(t.crit[c.id]!) : dash}</td>`).join("")}
+                <td><span class="avg">${t.avg !== null ? fmt(t.avg) : "—"}</span></td>
+              </tr>`).join("")}
+          </tbody>
+        </table>
+      </div>`;
+  }
+
+  function showTab(name: string) {
+    if (!["final", "jurado", "criterio"].includes(name)) name = "final";
+    tab = name;
+    try { localStorage.setItem("admin-tab", name); } catch {}
+    document.querySelectorAll<HTMLElement>(".tab").forEach((t) => t.classList.toggle("is-active", t.dataset.tab === name));
+    document.querySelectorAll<HTMLElement>(".tabpanel").forEach((p) => (p.hidden = p.id !== "tab-" + name));
+  }
+
+  function render() {
+    const agg = aggregate(rows);
+    renderStats(agg);
+    renderFinal(agg);
+    renderJudge(agg);
+    renderCriterio(agg);
+    showTab(tab);
+  }
+  const hora = () => new Date().toLocaleTimeString("es-PE", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+
+  function loadLocal(manual = false) {
+    rows = localRows();
+    $("#source").textContent = "Solo datos de este navegador (configura Firebase para ver a todos los jurados).";
+    render();
+    if (manual) toast("Puntajes actualizados", "ok");
+  }
+
+  /** Con Firebase, el panel escucha Firestore y se actualiza solo cuando un jurado guarda. */
+  function listenRemote() {
+    $("#source").textContent = "Conectando con Firebase…";
+    subscribeRemote(
+      (remote) => {
+        rows = remote;
+        $("#source").innerHTML = `<span class="live"></span>En vivo · Firebase · ${hora()}`;
+        render();
+      },
+      () => {
+        $("#source").textContent = "⚠ Sin conexión con Firebase. Revisa el internet y recarga la página.";
+        toast("No se pudo conectar con Firebase. Revisa la conexión y recarga.", "warn");
+      },
+    );
+  }
+
+  /* ---------- CSV ---------- */
+  function download(name: string, lines: unknown[][]) {
+    const q = (v: unknown) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+    const csv = "﻿" + lines.map((l) => l.map(q).join(",")).join("\n");
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+    a.download = `${name}-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  }
+  function csvRanking() {
+    const { scored, pending } = aggregate(rows);
+    download("despega-clein-ranking-final", [
+      ["Puesto", "Equipo", ...CONFIG.jurados.map((j) => j.nombre), "Promedio (/100)", "Jurados", "Empate"],
+      ...scored.map((t) => [t.rank, t.team, ...CONFIG.jurados.map((j) => t.judges[j.id] ? t.judges[j.id].total : ""), t.avg, `${t.n}/${NJ}`, t.tie ? "Sí" : ""]),
+      ...pending.map((t) => ["", t.team, ...CONFIG.jurados.map(() => ""), "", `0/${NJ}`, ""]),
+    ]);
+  }
+  function csvDetalle() {
+    const { valid } = aggregate(rows);
+    download("despega-clein-detalle", [
+      ["Jurado", "Equipo", ...CONFIG.criterios.map((c) => `${c.nombre} (1-${NOTA_MAX}, ${c.peso}%)`), "Puntaje (/100)", "Comentario", "Fecha"],
+      ...CONFIG.jurados.flatMap((j) => judgeRanking(valid, j.id).map((r) =>
+        [r.jurado, r.equipo, ...CONFIG.criterios.map((c) => r[c.id]), r.total, r.comentario, r.fecha])),
+    ]);
+  }
+
+  if (requireAdmin()) {
+    document.querySelectorAll<HTMLElement>(".tab").forEach((t) => t.addEventListener("click", () => showTab(t.dataset.tab!)));
+    $("#refreshBtn").addEventListener("click", () => loadLocal(true));
+    $("#csvRankBtn").addEventListener("click", csvRanking);
+    $("#csvDetailBtn").addEventListener("click", csvDetalle);
+    if (remoteEnabled()) {
+      $("#refreshBtn").hidden = true; // en vivo: no hace falta actualizar a mano
+      render();
+      listenRemote();
+    } else {
+      loadLocal();
+    }
+  }
+</script>
